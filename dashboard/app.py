@@ -19,10 +19,8 @@ SRC = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
 from feature_pipeline import build_feature_matrix, FEATURE_COLS, CLASS_NAMES
-from model import AlertnessModel, MODEL_DIR, train_and_save
 
 DATA_DIR = Path(__file__).parent.parent / "data" / "raw"
-MODEL_PATH = str(MODEL_DIR / "alertness_model.pkl")
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -56,15 +54,17 @@ def load_features(label_dir: str) -> pd.DataFrame:
     return build_feature_matrix(label_dir)
 
 
-@st.cache_resource(show_spinner="Training alertness model...")
-def get_model(label_dir: str) -> AlertnessModel:
-    model = AlertnessModel()
-    path = MODEL_PATH
-    if Path(path).exists():
-        model.load(path)
-    else:
-        model, _ = train_and_save(label_dir)
-    return model
+def alertness_to_time(score: float) -> tuple[float, float, float]:
+    """
+    Convert a 0–100 alertness score to (estimate, lower, upper) in minutes.
+    A fully alert driver (100) gets ~60 min; score 0 → ~0 min.
+    Uncertainty widens as score drops (harder to predict when already impaired).
+    """
+    est   = (score / 100.0) * 60.0
+    spread = max(3.0, (1.0 - score / 100.0) * 20.0)
+    lower = max(0.0, est - spread)
+    upper = est + spread
+    return est, lower, upper
 
 
 def score_color(score: float) -> str:
@@ -98,23 +98,17 @@ st.sidebar.markdown("---")
 
 replay_speed = st.sidebar.slider("Replay speed (frames/sec)", 1, 10, 3)
 show_raw = st.sidebar.checkbox("Show raw feature table", False)
-retrain = st.sidebar.button("Re-train model")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
 **Dataset:** State Farm Distracted Driver Detection
 **Classes:** neutral · microsleep · distraction · phone_use
-**Model:** LightGBM quantile regression (q10/q50/q90)
+**Alertness:** Rolling 10-frame impairment rate
+**Time estimate:** Score → remaining minutes (60 min = fully alert)
 """)
 
-# ── Load data & model ─────────────────────────────────────────────────────────
+# ── Load data ─────────────────────────────────────────────────────────────────
 df = load_features(str(DATA_DIR))
-
-if retrain and Path(MODEL_PATH).exists():
-    Path(MODEL_PATH).unlink()
-    st.cache_resource.clear()
-
-model = get_model(str(DATA_DIR))
 
 # ── Main layout ───────────────────────────────────────────────────────────────
 st.title("Driver Monitoring System — Predictive Alertness Estimator")
@@ -152,15 +146,20 @@ history_ttf   = []
 history_class = []
 
 for idx, row in df.iterrows():
-    features = row[FEATURE_COLS].values.astype(float)
-    pred = model.predict(features)
+    # Alertness score comes directly from the rolling feature pipeline
+    score = float(row["alertness_score"])
 
-    score    = pred["alertness_score"]
-    est      = pred["estimate_min"]
-    lower    = pred["lower_min"]
-    upper    = pred["upper_min"]
-    conf     = pred["confidence_pct"]
-    brk      = pred["break_window_min"]
+    # Smooth with a short exponential moving average across the session
+    if history_score:
+        score = 0.8 * score + 0.2 * history_score[-1]
+
+    est, lower, upper = alertness_to_time(score)
+
+    # Confidence: high when score is stable (low std), lower when volatile
+    recent_std = float(np.std(history_score[-10:])) if len(history_score) >= 5 else 10.0
+    conf = float(np.clip(95.0 - recent_std * 2.5, 50.0, 95.0))
+
+    brk  = max(1.0, lower * 0.85)
     cls_name = CLASS_NAMES.get(int(row["dominant_class"]), "unknown")
 
     history_score.append(score)
