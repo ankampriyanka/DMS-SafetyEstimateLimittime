@@ -1,3 +1,9 @@
+> **Portfolio focus:** Automotive AI · Driver Monitoring Systems · Predictive Safety
+>
+> This repository contains the predictive driver-alertness / remaining-safe-time prototype, a distinct research stream from the AI Trust Score work.
+
+---
+
 # DMS SafetyEstimateLimit — Predictive Driver Alertness System
 
 > A prototype that shifts Driver Monitoring Systems from **reactive fatigue detection** to **predictive alertness estimation** — quantifying how much safe driving time remains *before* fatigue onset, rather than alerting only after it begins.
